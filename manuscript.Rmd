@@ -1,0 +1,407 @@
+---
+title: "comparative_RNA-Seq_manuscript"
+author: "Thomas_Nicholson"
+date: "19/02/2022"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggtree)
+library(treeio)
+library(ape)
+library(UpSetR)
+library(svglite)
+library(ROSE)
+library(ggpubr)
+source('~/bin/R/functions.R')
+
+data_path = '~/bin/R/r_files/'
+figure_path = '~/Google Drive/My Drive/Comparative_RNA-Seq/'
+```
+
+
+## UpsetR figure
+
+```{r upsetr_tree}
+#ML phylogenetic tree built using 16s rRNA for the Gammaproteobacteria
+#The full tree was also built for all bacterial genera, but is not displayed
+tree <- read.tree(paste0(data_path, 'upsetr.tree'))
+
+  tbl_tree <- as_tibble(tree)
+  
+#list of extra Gammaproteobacteria that were 
+#not included in the RNA-sed analysis
+to_drop <- c("Azotobacter", "Marinobacter", "Pseudoalteromonas", "Agarivorans", 
+             "Vibrio", "Alishewanella", "Aggregatibacter", "Mannheimia", 
+             "Actinobacillus", "Xenorhabdus", "Providencia", "Proteus",
+             "Pantoea", "Brenneria", "Lonsdalea", "Buchnera.", "Wigglesworthia", 
+             "Sodalis", "Dickeya", "Citrobacter", "Plautiasymbiont", 
+             "Shewanella", "Moritella", "Moraxella", "Psychrobacter", 
+             "Methylomonas", "Cycloclasticus", "Methylococcus", "Francisella",
+             "Pseudoxanthomonas", "Candidatus", "Plautia", "Methylophaga", 
+             "Pasteurella", "Salinivibrio")
+  
+
+  sub_tree <- drop.tip(tree, to_drop)
+  
+    tbl_sub_tree <- as_tibble(sub_tree)
+
+  
+p <- ggtree(sub_tree) + 
+  geom_tiplab(align = T) +
+  xlim(0, 0.35)
+
+p
+if(FALSE){
+ggsave(filename = paste0(figure_path, "SVG/upsetr_subset_tree.svg"), 
+       plot = p, width = 8, height = 16)
+}
+p <- ggtree(tree) + 
+  geom_tiplab(align = T) +
+  xlim(0, 0.5)
+
+p
+if(FALSE){
+ggsave(filename = paste0(figure_path, "SVG/upsetr_tree.svg"), 
+       plot = p, width = 8, height = 16)
+}
+```
+
+```{r upsetr_plot}
+#matrix of bool values indicating for each RNA if it was found in a genus
+load(paste0(data_path, "upsetSubsetPC.Rda"))
+load(paste0(data_path, "upsetSubsetPredicted.Rda"))
+
+#list of extra Gammaproteobacteria that were 
+#not included in the RNA-sed analysis
+genera_arranged <- c("Lysobacter", "Stenotrophomonas", "Xylella", "Xanthomonas", 
+                     "Methylomicrobium", "Pseudomonas", "Acinetobacter", 
+                     "Alteromonas", "Photorhabdus", "Yersinia", "Erwinia", 
+                     "Edwardsiella", "Serratia", "Klebsiella", "Enterobacter", 
+                     "Salmonella", "Shigella", "Escherichia")
+
+
+upset_pred <- select_columns_by_list(upsetSubsetPredicted, genera_arranged)
+upset_pc <- select_columns_by_list(upsetSubsetPC, genera_arranged)
+
+UpSetR::upset(upset_pc, sets = colnames(upset_pc), 
+              mb.ratio = c(0.55, 0.45), order.by = "freq", keep.order = T)
+UpSetR::upset(upset_pred, sets = colnames(upset_pred), 
+              mb.ratio = c(0.55, 0.45), order.by = "freq", keep.order = T)
+
+
+
+if(FALSE){
+svglite(filename=paste0(figure_path, "SVG/upsetr_pc.svg"))
+UpSetR::upset(upset_pc, sets = colnames(upset_pc), 
+              mb.ratio = c(0.55, 0.45), order.by = "freq", keep.order = T)
+dev.off()
+svglite(filename=paste0(figure_path, "SVG/upsetr_pred.svg"))
+UpSetR::upset(upset_pred, sets = colnames(upset_pred), 
+              mb.ratio = c(0.55, 0.45), order.by = "freq", keep.order = T)
+dev.off()
+}
+
+```
+
+```{r expressed_regions_frequency_plot}
+#matrix of bool values indicating for each RNA if it was found in a genus
+load(paste0(data_path, "upsetSubsetPC.Rda"))
+load(paste0(data_path, "upsetSubsetPredicted.Rda"))
+
+
+#list of extra Gammaproteobacteria that were not included in the RNA-sed analyis
+genera_arranged <- c("Lysobacter", "Stenotrophomonas", "Xylella", "Xanthomonas", 
+                     "Methylomicrobium", "Pseudomonas", "Acinetobacter", 
+                     "Alteromonas", "Photorhabdus", "Yersinia", "Erwinia", 
+                     "Edwardsiella", "Serratia", "Klebsiella", "Enterobacter", 
+                     "Salmonella", "Shigella", "Escherichia")
+
+upset_pred <- select_columns_by_list(upsetSubsetPredicted, genera_arranged)
+upset_pc <- select_columns_by_list(upsetSubsetPC, genera_arranged)
+
+pc_freq <- colSums(upset_pc)
+pred_freq <- colSums(upset_pred)
+
+pc_freq <- vector_to_dataframe(pc_freq, 'genera')
+pred_freq <- vector_to_dataframe(pred_freq, 'genera')
+
+pc_freq <- pc_freq %>% dplyr::rename(freq = vec) %>% mutate(group ='pc')
+pred_freq <- pred_freq %>% dplyr::rename(freq = vec) %>% mutate(group ='pred')
+
+freq_data <-pc_freq %>% bind_rows(pred_freq)
+
+freq_data$genera <- factor(freq_data$genera, levels = unique(freq_data$genera))
+
+p <- ggplot() +
+  geom_bar(data = freq_data, 
+           aes(y = genera, x = freq, group = group, fill = group), 
+           stat = 'identity', position = 'dodge')
+
+p
+
+if(FALSE){
+  ggsave(filename = paste0(figure_path, 'SVG/rnas_frequency.svg'), 
+  plot = p, width = 8, height = 16)
+}
+
+```
+
+## Random forest interpretation figure 
+
+```{r random_forest_frequency_plots}
+load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
+load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
+
+#select the desired columns from the predicted data and validatation data
+probDat <- predDat %>% 
+  select(probability, ID, group, srna.counts.2) %>% 
+  bind_rows(validation2 %>% select(probability, ID, group, srna.counts.2))
+
+#not sure if setting factors will break anything so using another data frame
+plotDat <- probDat
+plotDat$group <- factor(plotDat$group, 
+                        levels = c('Positive Control', 
+                                   'Predicted', 
+                                   'Negative Control'))
+
+#plot histogram of the probabilities
+p <- ggplot() +
+  geom_histogram(data = plotDat, 
+                 aes(x = probability, 
+                     y = ..density.., 
+                     group = group, 
+                     fill = group), 
+                 binwidth = 0.02) +
+  geom_vline(xintercept = 0.17) +
+  geom_vline(xintercept = 0.5) 
+p
+
+if(FALSE){
+  ggsave(filename = paste0(figure_path, "SVG/histogram_probabilities.svg"), 
+         plot = p, width = 178, height = 155, units = "mm")
+}
+
+#get the cumulative counts of the number of alignments as probability increases
+countsCumul <- cumulativeCounts(dists = probDat, 
+                                smooth = F, 
+                                target_column = 'probability')
+
+##produces plot to use for figure showing probability results
+p <- ggplot() +
+  geom_line(data = countsCumul, aes(x= probability, 
+                                    y = cumulative_prop,
+                                    group = group, 
+                                    colour = group),
+            size = 1.5, 
+            show.legend = F) +
+  scale_y_continuous(trans = 'log10')
+p + theme_classic()
+
+if(FALSE){
+  ggsave(filename = paste0(figure_path, "SVG/cumulative_probabilities.svg"), 
+                           plot = p, width = 178, height = 155, units = "mm")
+}
+```
+
+
+```{r random_forest_statistics}
+load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
+load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
+
+#select the desired columns from the predicted data and validatation data
+probDat <- predDat %>% 
+  select(probability, ID, group, srna.counts.2) %>% 
+  bind_rows(validation2 %>% 
+              select(probability, ID, group, srna.counts.2))
+
+#not sure if setting factors will break anything so using another data frame
+plotDat <- probDat
+plotDat$group <- factor(plotDat$group, 
+                        levels = c('Positive Control', 
+                                   'Predicted', 
+                                   'Negative Control'))
+dat <- allScores(plotDat, 0.01, 'probability')
+
+#get the FNR and PPV values at each threshold
+if(FALSE){
+  for(i in seq(0,1, by=0.01)){
+    scores <- scoreProbabities(plotDat, 
+                               threshold = i, 
+                               target_column = 'probability')
+    print(paste0(i, ': ', scores$fnr, ', ', scores$ppv))
+  }
+}
+
+
+scores <- scoreProbabities(plotDat, 
+                           threshold = 0.17, 
+                           target_column = 'probability')
+printListSubset(scores, 
+                vec = c('ppv', 'fnr', 'pred_pos', 'pred_pct'), 
+                startText = 'p > 0.17', round_val = 3)
+
+
+scores <- scoreProbabities(plotDat, 
+                           threshold = 0.5, 
+                           target_column = 'probability')
+printListSubset(scores, 
+                vec = c('ppv', 'fnr', 'pred_pos', 'pred_pct', 'pc_pct'), 
+                startText = 'p > 0.5', round_val = 3)
+
+
+scores <- scoreProbabities(plotDat, 
+                           threshold = 0.81, 
+                           target_column = 'probability')
+printListSubset(scores, 
+                vec = c('ppv', 'fnr', 'pred_pos', 'pred_pct', 'pc_pct'), 
+                startText = 'p > 0.81', round_val = 3)
+
+
+
+```
+
+```{r statistics_plots}
+load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
+load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
+
+#select the desired columns from the predicted data and validatation data
+probDat <- predDat %>% 
+  select(probability, ID, group, srna.counts.2) %>% 
+  bind_rows(validation2 %>% 
+              select(probability, ID, group, srna.counts.2))
+
+#not sure if setting factors will break anything so using another data frame
+plotDat <- probDat
+plotDat$group <- factor(plotDat$group, 
+                        levels = c('Positive Control', 
+                                   'Predicted', 
+                                   'Negative Control'))
+dat <- allScores(plotDat, 0.01, 'probability')
+
+ggplot(data = dat) + 
+  geom_line(aes(x = threshold, y = ppv), color = 'blue') + 
+  geom_line(aes(x = threshold, y = fnr), color = 'red')
+
+
+roc.curve(response = plotDat$group[plotDat$group != 'Predicted'], 
+          predicted = plotDat$probability[plotDat$group != 'Predicted'])
+
+ggplot(data = dat) + 
+  geom_line(aes(x = fnr, y = specificity), color = 'blue') + 
+  geom_line(aes(x = fpr, y = sensitivity), color = 'red')
+
+
+```
+
+
+```{r repeat_of_cumulative_distributions}
+#is there a difference between low scoring (p < 0.17 and high scoring p > 0.5) predicted rufs?
+
+load("~/bin/Phd/Chapter_4/chapter_4_files/predDat.Rda")
+load("~/bin/Phd/Chapter_4/chapter_4_files/validatation2.Rda")
+##function written using max_dist as column name so each variable needs to  be renamed to this before using cumulativeDistribution()
+
+featuresSelected <- predDat %>% 
+  mutate(group = ifelse(probability > 0.75, 'high', ifelse(probability <= 0.17, 'low', 'drop'))) %>% 
+  filter(group != 'drop') %>% select(group, distance, read.max.score, 
+                                     cov.min.eval, z_max, motif.max.score,
+                                     alifold_cov_score, mfe.score, 
+                                     gc.score) %>% 
+  bind_rows(validation2 %>% filter(group == 'Positive Control') %>% 
+              select(group, distance, read.max.score, 
+                                     cov.min.eval, z_max, motif.max.score,
+                                     alifold_cov_score, mfe.score, 
+                                     gc.score))
+
+dat <- featuresSelected %>% dplyr::rename(max_dist = distance) %>% filter(max_dist <= 0.15)
+distance.p <- cumulativeDistribution(dat, alternative = "two.sided", show.legend = F)
+distance.p <- distance.p +
+   labs(y = "Cumulative Proportion", x = "Evolutionary distance")
+
+##known sRNAs and predicted RUFs are only selected if there is read depths. For a fair comparison, RINCs with read depths of 0 are removed.
+dat <- featuresSelected %>% select(group, read.max.score) %>% dplyr::rename(max_dist = read.max.score) %>% filter(max_dist > 0)
+reads.p <- cumulativeDistribution(dat, alternative = 'two.sided', show.legend = F)
+reads.p <- reads.p +
+   labs(y = "Cumulative Proportion", x = "Total reads")+
+  scale_x_continuous(trans = "log10")
+#reads.p
+
+dat <- featuresSelected %>% mutate(max_dist = -log(cov.min.eval))
+rscape.p <- cumulativeDistribution(dat)
+rscape.p <- rscape.p +
+   labs(y = "Cumulative Proportion", x = "Rscape covariance score")
+# rscape.p
+
+##none of the z scores are greater than 3, so the NA value of 10 is changed to 3 (then the negaive is taken for the plot)
+dat <- featuresSelected %>% mutate(max_dist = ifelse(z_max == 10, -3, -z_max)) %>% select(group, max_dist)
+z.p <- cumulativeDistribution(dat, show.legend = F)
+z.p <- z.p +
+   labs(y = "Cumulative Proportion", x = "Alifold z-score (negative energy)")
+
+# z.p
+##selected a window where the values are easier to visualise. This has removed 16 known sRNAs and 9 predicted RUFs
+dat <- featuresSelected %>% dplyr::rename(max_dist = motif.max.score) %>% filter(max_dist < 1000)
+motif.p <- cumulativeDistribution(dat)
+motif.p <- motif.p +
+   labs(y = "Cumulative Proportion", x = "Motif score")
+
+dat <- featuresSelected %>% mutate(max_dist = -alifold_cov_score) 
+alifold.cov.p <- cumulativeDistribution(dat)
+alifold.cov.p <- alifold.cov.p +
+   labs(y = "Cumulative Proportion", x = "Alifold covariance score")
+
+dat <- featuresSelected %>% mutate(max_dist = -mfe.score)
+mfe.p <- cumulativeDistribution(dat, alternative = 'two.sided')
+mfe.p <- mfe.p +
+   labs(y = "Cumulative Proportion", x = "MFE score (negative energy)")
+
+
+dat <- featuresSelected %>% arrange(gc.score) %>% mutate(gc.score = round(gc.score))
+
+highCounts <- dat %>% filter(group == "high") %>% group_by(gc.score) %>% summarise(count = n()) %>% arrange(gc.score) %>% ungroup() %>% tidyr::complete(gc.score = seq(from = 0, to = 100, by = 1), fill = list(count = 0))
+lowCounts <- dat %>% filter(group == "low") %>% group_by(gc.score) %>% summarise(count = n()) %>% arrange(gc.score) %>% ungroup() %>% tidyr::complete(gc.score = seq(from = 0, to = 100, by = 1), fill = list(count = 0))
+
+highTotal <- dat %>% filter(group == "high") %>% nrow()
+lowTotal <- dat %>% filter(group == "low") %>% nrow()
+
+highGC <- zoo::zoo(highCounts$count)
+lowGC <- zoo::zoo(lowCounts$count)
+
+smoothHigh <- zoo::rollapply(highGC, width = 10, by = 1, FUN = mean, align = "center", partial = T) 
+smoothLow <- zoo::rollapply(lowGC, width = 10, by = 1, FUN = mean, align = "center", partial = T) 
+
+smoothHigh <- as.data.frame(smoothHigh) %>% mutate(x = row_number() -1) %>% mutate(group = "high") %>% dplyr::rename(y = smoothHigh) %>% mutate(y = y/highTotal)
+smoothLow <- as.data.frame(smoothLow) %>% mutate(x = row_number() -1) %>% mutate(group = "low") %>% dplyr::rename(y = smoothLow) %>% mutate(y = y/lowTotal)
+
+pcCounts <- dat %>% filter(group == "Positive Control") %>% group_by(gc.score) %>% summarise(count = n()) %>% arrange(gc.score) %>% ungroup() %>% tidyr::complete(gc.score = seq(from = 0, to = 100, by = 1), fill = list(count = 0))
+pcTotal <- dat %>% filter(group == "Positive Control") %>% nrow()
+pcGC <- zoo::zoo(pcCounts$count)
+smoothPC <- zoo::rollapply(pcGC, width = 10, by = 1, FUN = mean, align = "center", partial = T) 
+smoothPC <- as.data.frame(smoothPC) %>% mutate(x = row_number() -1) %>% mutate(group = "Positive Control") %>% dplyr::rename(y = smoothPC) %>% mutate(y = y/pcTotal)
+
+smoothGC <- smoothHigh %>%  bind_rows(smoothLow, smoothPC)
+
+gc.p <- ggplot() +
+  geom_path(data = smoothGC, aes(x = x, y = y, group = group, color = group), size = 1, show.legend = FALSE)  + labs(y = "Proportion", x = "GC percentage")  + theme_classic()
+
+
+
+all.p <- ggarrange(distance.p, reads.p, mfe.p, z.p, rscape.p, alifold.cov.p,  motif.p, gc.p + rremove("x.text"),
+          labels = LETTERS[1:9],
+          ncol = 3, nrow = 3)
+
+all.p
+
+
+if(FALSE){
+ggsave(filename = paste0(figure_path, "SVG/separated_distributions.svg"), plot = all.p, width = 450, height = 307, units = "mm")
+}
+
+
+```
+
