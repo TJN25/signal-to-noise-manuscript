@@ -1,9 +1,20 @@
 ---
-title: "comparative_RNA-Seq_manuscript"
-author: "Thomas_Nicholson"
-date: "19/02/2022"
-output: pdf_document
-editor_options: 
+title: 'Comparative RNA-Seq: Signal to Noise Documentation'
+author: "T.J Nicholson & P.P Gardner"
+date: "March 2022"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 4
+    toc_float: yes
+    number_sections: yes
+  html_notebook:
+    toc: yes
+    toc_depth: 4
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+editor_options:
   chunk_output_type: console
 ---
 
@@ -24,9 +35,169 @@ figure_path = '~/Google Drive/My Drive/Comparative_RNA-Seq/'
 ```
 
 
+```{r toc, echo=FALSE, include=F} 
+render_toc("manuscript.Rmd")
+```
+
+# Data Selection {#data_selection}
+
+## Strains and experiments
+How to get the summary table for the genera for the RNA-seq data:
+
+-   Search the [SRA](https://www.ncbi.nlm.nih.gov/sra/) section of ncbi with 
+    the genus name and ['Organism'] tag.
+
+-   Select "Send results to Run selector"
+
+-   Select the "Metadata" button of the "Total" row and "Download" Column.
+
+-   The genome accession for each added genome was looked up on 
+    [NCBI](https://www.ncbi.nlm.nih.gov/) using the strain name in the file or 
+    by search for the given experiment in the 
+    [SRA](https://www.ncbi.nlm.nih.gov/sra/) section.
+
+-   Create a folder for the genus e.g. `mkdir Escherichia`
+
+-   Create a folder using the GenBank assembly 
+    accession e.g. `mkdir GCA_002504285.1.data/`
+
+-   Create an `experiments_list.txt` file listing all of the SRA experiments 
+    for the given genome and save the file in the `genus` folder.
+    
+-   Run `callPeaksforGenome.sh -g <GCA Accession> -s` from within 
+    the `genus` folder.
+
+-   List of representative genomes selected from RefSeq95
+    -   2 genomes from each genera were selected (where possible)
+    
+## Predicting sRNAs
+
+-   The `callPeaksforGenome.sh` carried out a number of steps
+    -   `fasterq-dump <SRA Accession>` downloaded each of the RNA-Seq files
+        listed in the `experiments_list.txt` file.
+    -   `fetch_genomes_from_GCA.sh` downloaded the nucleotide FASTA file and
+        the annotation file in GFF3 format.
+    -   Known ncRNAs are identified using `cmscan` with models from Rfam
+    -   `sra2plot.1.0.3.sh` took these files and produced a plot file (showing
+        read depths at each nucleotide position) for each of the experiments.
+    -   `run_rnaPeakCalling.R` took these plot files and identfied regions of
+        RNA expression tht occured in intergenic regions
+    -   `combine_gff_files.R` took the expressed regions from each of the 
+        individual files (including the annotation file) and merged regions
+        where there was an overlap.
+
+-   The resulting regions are separated into `Known sRNA` and `Putative RUFs`
+    based on whether an expressed region overlapped with a previously 
+    identified ncRNA
+
+-   The negative control group (RINCs) was generated 
+    using `get_random_srna_sequences.py`
+      -   For each putative RUF, a region of the same size was selected at 
+          random from an intergenic region in the same genome
+
+```{bash get_random_srna_sequences_loop, eval = F}
+for file in *.txt; do 
+  accession=`basename $file _new_calls.txt`; 
+  get_random_srna_sequences.py -a $accession; 
+  done
+```
+
+- The nucleotide sequences for each group were obtained from the nucleotide
+  FASTA files using the coordinates of the regions
+
+## Analysis
+
+### Homology Search
+
+-   `run_sRNA_nhmmer.sh -d <group_seqs.fna> -f <path/to/sequences/> -e fna`
+    -   The `-e` flag is for the the expected extension of the input files.
+    -   This loops through all the individual sequences in each data set and
+        carries out a similarity search against all the sequences in the data
+        set.
+    -   The matched sequences are removed from the remaining search list to 
+        prevent multiple identical alignments being produced.
+        
+-   `run_sRNA_nhmmer.sh -d <path/to/genomes/> -f <path/to/initial_alignment> -o` 
+    `<path_to_output>/ -e stk -E 1e-3`
+    -   The `-E` flag sets the e-value threshold for inclusion.
+    -   This gets repeated two times to generate deep alignments for the 
+        sequences from each data set.
+        
+-   A check was carried out for each of the groups (known sRNAs, predicted 
+    RUFs and RINCs) that none of the alignments shared sequences.
+      -   RINCs sharing sequences with either of the other data sets were 
+          removed.
+      -   Predicted RUFs sharing sequences with the known sRNAs were removed.
+      
+
+```{bash, eval=F}
+group='predicted' #repeat for each group
+cd ${group}/alignments/
+> ../${group}_contig_pos.txt
+for file in *.stk;
+do 
+  ID=`basename $file .stk`
+  
+  # extract the contig name and position for each sequence in each stockholm
+  #alignment file
+  grep "/" $file | grep -v "//" | cut -d ' ' -f1 | sed 's/\// /g' | 
+  sed 's/-/ /g'| cut -d '|' -f2 | sort | uniq | sed -e "s/$/ $ID/" >> 
+  ../${group}_contig_pos.txt
+done
+
+```
+      
+```{r eval=F}
+library(GenomicRanges)
+ncdat <- read.table("negative_control_contig_pos.txt", sep = " ", fill = T)
+
+pcdat <- read.table("positive_control_contig_pos.txt", fill = T)
+
+preddat <- read.table("predicted_contig_pos.txt", fill = T)
+
+pcdat <- reformatContigPositionData(dat = pcdat)
+ncdat <- reformatContigPositionData(dat = ncdat)
+preddat <- reformatContigPositionData(dat = preddat)
+
+nc.pc.Dat <- getOverlapIDs(queryDat =ncdat, targetDat = pcdat)
+nc.pred.Dat <- getOverlapIDs(queryDat =ncdat, targetDat = preddat)
+pc.pred.Dat <- getOverlapIDs(queryDat =preddat, targetDat = pcdat)
+
+dat <- data.frame(ids = c(nc.pc.Dat$id1, nc.pred.Dat$id1))
+
+write.table(dat, file = "not_negative_control_ids.txt", row.names = F, col.names = F, quote = F)
+
+dat2 <- data.frame(ids =  pc.pred.Dat$id1)
+
+write.table(dat2, file = "not_predicted_ids.txt", row.names = F, col.names = F, quote = F)
+
+```
+
+-   A similar check was carried out within each group to reduce redundancy
+    -   Alignments sharing a sequence were merged into a single alignment.
+
+```{bash, eval=F}
+
+```
+
+
+### Evolutionary Distance
+
+-   A `cmscan` of all the genomes using the RF00177 Rfam model (bacterial 
+      ribosomal SSU) was carried out.
+-   [Phylip](https://evolution.genetics.washington.edu/phylip.html) was used to 
+    build a maximum likelihood phyogenetic tree.
+      -   The `RF00177.stk` alignment was reformatted to `.phylip` format
+      -   `esl-reformat phylip RF00177.stk > RF00177.phylip`
+      -   This was used as the input for `dnadist` with an output of 
+          `RF00177.dnadist`.
+      
+      
+
+
 ## UpsetR figure
 
-```{r upsetr_tree}
+```{r upsetr_tree, eval=F}
 #ML phylogenetic tree built using 16s rRNA for the Gammaproteobacteria
 #The full tree was also built for all bacterial genera, but is not displayed
 tree <- read.tree(paste0(data_path, 'upsetr.tree'))
@@ -71,7 +242,7 @@ ggsave(filename = paste0(figure_path, "SVG/upsetr_tree.svg"),
 }
 ```
 
-```{r upsetr_plot}
+```{r upsetr_plot, eval=F}
 #matrix of bool values indicating for each RNA if it was found in a genus
 load(paste0(data_path, "upsetSubsetPC.Rda"))
 load(paste0(data_path, "upsetSubsetPredicted.Rda"))
@@ -108,7 +279,7 @@ dev.off()
 
 ```
 
-```{r expressed_regions_frequency_plot}
+```{r expressed_regions_frequency_plot, eval=F}
 #matrix of bool values indicating for each RNA if it was found in a genus
 load(paste0(data_path, "upsetSubsetPC.Rda"))
 load(paste0(data_path, "upsetSubsetPredicted.Rda"))
@@ -153,11 +324,13 @@ if(FALSE){
 
 ## Random forest interpretation figure 
 
-```{r random_forest_frequency_plots}
+  -   The output of the RF classifier for the test data and the predicted RUFs
+
+```{r random_forest_frequency_plots, }
 load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
 load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
-
 #select the desired columns from the predicted data and validatation data
+
 probDat <- predDat %>% 
   select(probability, ID, group, srna.counts.2) %>% 
   bind_rows(validation2 %>% select(probability, ID, group, srna.counts.2))
@@ -208,8 +381,22 @@ if(FALSE){
 }
 ```
 
+  -   The predicted RUFs were split into <strong>transcriptional noise</strong>, 
+      <strong>possible RNA</strong>, and <strong>putative RNA</strong>.
+  -   The categories were then compared to see if there was a difference in the
+      level of transcription between the groups.
 
-```{r random_forest_statistics}
+```{r transcription_levels_by_result}
+
+
+
+
+```
+
+
+
+```{r random_forest_statistics, eval=F}
+#TODO this is not used
 load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
 load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
 
@@ -265,7 +452,8 @@ printListSubset(scores,
 
 ```
 
-```{r statistics_plots}
+```{r statistics_plots, eval=F}
+#TODO this is not used
 load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
 load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
 
@@ -299,8 +487,10 @@ ggplot(data = dat) +
 ```
 
 
-```{r repeat_of_cumulative_distributions}
+```{r repeat_of_cumulative_distributions, eval=F}
+#TODO this is not used
 #is there a difference between low scoring (p < 0.17 and high scoring p > 0.5) predicted rufs?
+
 
 load("~/bin/Phd/Chapter_4/chapter_4_files/predDat.Rda")
 load("~/bin/Phd/Chapter_4/chapter_4_files/validatation2.Rda")
