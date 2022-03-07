@@ -3,17 +3,17 @@ title: 'Comparative RNA-Seq: Signal to Noise Documentation'
 author: "T.J Nicholson & P.P Gardner"
 date: "March 2022"
 output:
+  pdf_document:
+    toc: yes
+    toc_depth: '4'
+  html_notebook:
+    toc: yes
+    toc_depth: 4
   html_document:
     toc: yes
     toc_depth: 4
     toc_float: yes
     number_sections: yes
-  html_notebook:
-    toc: yes
-    toc_depth: 4
-  pdf_document:
-    toc: yes
-    toc_depth: '4'
 editor_options:
   chunk_output_type: console
 ---
@@ -28,6 +28,8 @@ library(UpSetR)
 library(svglite)
 library(ROSE)
 library(ggpubr)
+library(rstatix)
+options(dplyr.summarise.inform = FALSE)
 source('~/bin/R/functions.R')
 
 data_path = '~/bin/R/r_files/'
@@ -35,9 +37,6 @@ figure_path = '~/Google Drive/My Drive/Comparative_RNA-Seq/'
 ```
 
 
-```{r toc, echo=FALSE, include=F} 
-render_toc("manuscript.Rmd")
-```
 
 # Data Selection {#data_selection}
 
@@ -128,7 +127,6 @@ for file in *.txt; do
       -   RINCs sharing sequences with either of the other data sets were 
           removed.
       -   Predicted RUFs sharing sequences with the known sRNAs were removed.
-      
 
 ```{bash, eval=F}
 group='predicted' #repeat for each group
@@ -176,8 +174,140 @@ write.table(dat2, file = "not_predicted_ids.txt", row.names = F, col.names = F, 
 -   A similar check was carried out within each group to reduce redundancy
     -   Alignments sharing a sequence were merged into a single alignment.
 
-```{bash, eval=F}
+```{r redundancy_1_R, eval=F}
+#read in the data
+dat <- read.table("predicted_contig_pos.txt", sep = " ", fill = T, as.is = T)
+dat <- dat %>% select(V1, V4)
+#split out the columns of interest
+dat <- dat %>% separate(col = V1, into = c("contig", "coordinates"), sep = "\\/", remove = F)
+dat <- dat %>% separate(col = coordinates, into = c("start", "stop"), sep = "-", remove = F)
+dat <- dat %>% dplyr::rename(srna = V4) %>% select(contig, srna, start, stop) %>% mutate(strand = "+")
+colnames(dat) <- c("contig","srna", "start", "stop", "strand") 
 
+#rearrange the start and stop so th at that the stop > start
+dat <- dat %>% mutate(tmpstart = ifelse(start < stop, start, stop),
+                      tmpend = ifelse(start > stop, start, stop))
+
+#Set up the data to be used in genomic ranges overlap search
+query <- GRanges(seqnames = dat$contig,
+                 ranges = IRanges(start = dat$tmpstart, end = dat$tmpend),
+                  strand = dat$strand, query_name = dat$srna)
+lookup1 <- data.frame(id1 = dat$srna, queryHits = c(1:length(dat$srna)))
+lookup2 <- data.frame(id2 = dat$srna, subjectHits = c(1:length(dat$srna)))
+
+
+#Run search for overlaps and merge with original input to obtain pairs of 
+#overlaps
+tmp <- GenomicRanges::findOverlaps(query, query, type = 'any')
+tmp <- as.data.frame(tmp)
+tmp <- tmp %>% left_join(lookup1) %>% left_join(lookup2)
+tmp <- tmp %>% filter(id1 != id2)
+smallDat <- tmp %>% select(id1, id2) %>% unique()
+
+#Swap columns and combine so that every combination is present in both columns
+s2 <- smallDat
+s2$id1 <- smallDat$id2
+s2$id2 <- smallDat$id1
+smallDat <- smallDat %>% bind_rows(s2) %>% unique()
+
+ids <- unique(dat$srna)
+
+#Loop over the ids and run a check to see if there are any overlapping ids
+#to speed this up check if an id has already been seen and skip it.
+#Write a list of overlapping ids to a unqiue file
+checked_ids <- c()
+for(item in ids){
+  if(item %in% checked_ids){
+    next
+  }
+  current_ids <- groupOverlapItems(smallDat, item, current_ids = c())
+  checked_ids <- c(checked_ids, current_ids)
+    write.table(x = current_ids, 
+                file = paste("combined_alignment_ids/", 
+                             current_ids[1], 
+                             "_combined_list.txt", sep = ""), 
+                append = T, quote = F, row.names = F, col.names = F)
+}
+
+```
+
+```{bash, eval=F}
+#move into the folder where the lists of overlapping ids are kept
+cd combined_alignments_ids/
+mkdir -p fasta
+mkdir -p hmm
+mkdir -p alignments
+
+#loop through the files that contain overlapping ids
+for file in *.txt;
+do
+max_num="0"
+outname=`basename $file _combined_list.txt`
+#Check if there is only one ID listed in a file. If so there is no merge
+#required.
+line_count=`wc -l $file | cut -d ' ' -f1`
+if (( $line_count == 1 ));then
+cp ../large_alignments/alignments/$outname.stk ./alignments
+continue
+fi
+
+#loop through the file and extract the sequences from each of the stk files
+#that correspond to the ids that are overlapping
+> fasta/$outname.fa
+while read line; 
+do 
+esl-reformat fasta ../large_alignments/alignments/$line.stk >> fasta/$outname.fa
+current_num=`esl-alistat ../large_alignments/alignments/$line.stk | grep "Number of sequences" | cut -d ' ' -f 4`
+
+#check if the current alignment is the longest
+if(( $current_num > $max_num ));
+then
+max_seq="$line.stk"
+max_num="$current_num"
+fi
+done < $file
+
+#build an hmm using the longest alignment
+hmmbuild hmm/$outname.hmm ../large_alignments/alignments/$max_seq
+
+#build an alignment using all the sequences from the overlapping ids
+hmmalign --informat fasta hmm/$outname.hmm fasta/$outname.fa | esl-alimask -g --gapthresh 0.8 -p --pfract 0.5 --pthresh 0.5 - | esl-alimanip   --lnfract 0.6 --lxfract 1.4 --lmin 50 --lmax 500 --detrunc 50 - > alignments/$outname.stk
+done
+```
+
+### File setup
+
+-   There are some files that are consistently used throughout the analysis
+  -   `genome_contig_pairs.txt` is a file that maps the genome `GCA_` ids to the 
+      contig `NC` ids.
+    -   this is necessary due to the alignment reporting contig names, but the 
+        predicted RUFs belonging to genomes rather than contigs.
+  -   `query_target_pairs.txt` consists of each alignment ID and the contig IDs
+      of each sequence within the alignment. 
+  
+```{bash,  eval=F}
+#loop through all the genomes in the analysis
+cd representative_genomes/
+> ../genome_contig_pairs.txt
+for file in GC*.fna;  
+do   
+  ID=`echo $file | cut -d '.' -f1,2 | cut -d "_" -f1,2`;   
+  grep ^">" $file | cut -d ' ' -f1 | sort | uniq | sed 's/>//g' | sed -e "s/$/   $ID/" >> ../genome_contig_pairs.txt;   
+done
+```
+
+```{bash query_target_pairs, eval=F}
+#for each group loop through all the alignments and extract the contig IDs
+#of all the sequences within each alignment
+group="positive_control"
+cd ${group}/alignments
+> ../query_target_pairs.txt
+for file in *.stk; 
+do 
+  ID=`echo $file | cut -d '.' -f1,2 | cut -d "_" -f1,2`; 
+  ID_2=`echo $file | cut -d '.' -f1,2 `;  
+  grep ^"#=GS" $file | sort | uniq | cut -d "/" -f1 | cut -d ' ' -f2 | rev | cut -d '|' -f1 | rev | sed -e "s/$/   $ID   $ID_2/" >> ../query_target_pairs.txt;  
+done
 ```
 
 
@@ -191,6 +321,72 @@ write.table(dat2, file = "not_predicted_ids.txt", row.names = F, col.names = F, 
       -   `esl-reformat phylip RF00177.stk > RF00177.phylip`
       -   This was used as the input for `dnadist` with an output of 
           `RF00177.dnadist`.
+          
+-   The file was not formatted in a usable way for reading into R
+      -   `cat  RF00177.dnadist | tr '\n' ' ' | sed 's/ N/\nN/g' > RF00177.dists`
+      
+```{r, eval=FALSE}
+#open the dnadist file
+dat <- read.table("RF00177.dists", sep = "",
+                  header = F, fill = T, stringsAsFactors = F, as.is = T)
+dat <- dat %>% filter(!is.na(V2))
+colnames(dat)[1] <- "phylip_id"
+colnames(dat) <- c("names", dat$phylip_id)
+
+#reformat the data to use in subsequent steps
+meltDat <- melt(dat)
+colnames(meltDat) <- c("phylip_id", "query.name", "distance")
+
+#open list of phylip ids (truncated) and contig ids
+load(file = "current_ids.Rda")
+current_ids <- current_ids %>% unique()
+
+#open list of genome and contig ids
+contig_labels <- read.table("genome_contig_pairs.txt")
+colnames(contig_labels) <- c("id", "target.genome")
+
+#combine the phylip ids with the genome ids
+contig_labels <- contig_labels %>% 
+  left_join(current_ids, by = "id") %>% 
+  select(-b)
+
+#combine the genome ids with the distances data for the first column
+colnames(contig_labels) <- c("target.id", "target.genome", "phylip_id")
+meltDat <- meltDat %>% left_join(contig_labels, by = 'phylip_id')
+
+#combine the genome ids with the distances data for the second column
+colnames(meltDat)[1:2] <- c("target.name", "phylip_id")
+colnames(contig_labels) <- c("query.id", "query.genome", "phylip_id")
+meltDat <- meltDat %>% left_join(contig_labels, by = 'phylip_id')
+colnames(meltDat)[2] <- c("query.name")
+
+#take the pairs of genomes and arrange based on distances (to account for
+#multiple contigs). Sort these and select a single distance for each pair. 
+meltDat <- meltDat %>%  group_by(target.genome, query.genome) %>% arrange(as.numeric(distance)) %>% mutate(row_num = row_number()) %>% filter(row_num == 1) %>% select(-row_num)
+save(meltDat, file = "~/bin/R/r_files/distanceMelt.Rda")
+
+#Reshape the data back to a matrix (not sure this was needed but helped for 
+#visualising the problem)
+mat <- reshape2::acast(data = meltDat %>% 
+                         select(target.genome, query.genome, distance), 
+                       formula = target.genome ~ query.genome)
+distanceMat <- as.data.frame(mat)
+save(distanceMat, file = "~/phd/RNASeq/distanceMat.Rda")
+
+#include a save a load point as the previous steps were time consuming and
+#this allows for troubleshooting the next steps
+load("~/phd/RNASeq/distanceMat.Rda")
+
+#get the maximum distances between pairs of sequences for each alignment.
+max_dists_pred <- calculateMaximumDistances('predicted')
+save(max_dists_pred, file = "~/bin/R/r_files/max_dists_pred.Rda")
+max_dists_pc <- calculateMaximumDistances('pc')
+save(max_dists_pc, file = "~/bin/R/r_files/max_dists_pc.Rda")
+max_dists_nc <- calculateMaximumDistances('negative_control')
+save(max_dists_nc, file = "~/bin/R/r_files/max_dists_nc.Rda")
+
+
+```
       
       
 
@@ -327,7 +523,7 @@ if(FALSE){
   -   The output of the RF classifier for the test data and the predicted RUFs
 
 ```{r random_forest_frequency_plots, }
-load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
+load("~/bin/manuscript/data/predDat.Rda")
 load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
 #select the desired columns from the predicted data and validatation data
 
@@ -387,17 +583,40 @@ if(FALSE){
       level of transcription between the groups.
 
 ```{r transcription_levels_by_result}
+load("~/bin/manuscript/data/predDat.Rda")
 
-
-
-
+#create groups withing the predDat based on the probability thresholds
+predDat <- predDat %>% 
+  mutate(group = ifelse(probability <0.17, 
+                        'transcriptional noise',
+                        ifelse(probability <= 0.81, 
+                               'possible RNA', 
+                               'putative RNA')))
+predDat$group = factor(predDat$group, levels = c("transcriptional noise",
+                                                 "possible RNA", 
+                                                 "putative RNA"))
+#boxplot of transcription levels for each group
+p <- ggplot(data = predDat) +
+  geom_boxplot(aes(y = read.max.score, group = group, fill = group),
+               outlier.alpha = 0.1) +
+  scale_y_continuous(trans = 'log10')
+p
+if(FALSE){
+  ggsave(filename = paste0(figure_path, "SVG/trascription-comparison.svg"),
+         plot = p, width = 450, height = 307, units = "mm")
+}
+#run wilcox test comparing the transcriptional noise and the other groups
+wilcox.test(x = predDat$read.max.score[predDat$group == "transcriptional noise"],
+            y = predDat$read.max.score[predDat$group == "putative RNA"])
+wilcox.test(x = predDat$read.max.score[predDat$group == "transcriptional noise"],
+            y = predDat$read.max.score[predDat$group == "possible RNA"])
 ```
 
 
 
 ```{r random_forest_statistics, eval=F}
 #TODO this is not used
-load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
+load("~/bin/manuscript/data/predDat.Rda")
 load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
 
 #select the desired columns from the predicted data and validatation data
@@ -454,7 +673,7 @@ printListSubset(scores,
 
 ```{r statistics_plots, eval=F}
 #TODO this is not used
-load("~/bin/PhD/Chapter_4/chapter_4_files/predDat.Rda")
+load("~/bin/manuscript/data/predDat.Rda")
 load("~/bin/PhD/Chapter_4/chapter_4_files/validatation2.Rda")
 
 #select the desired columns from the predicted data and validatation data
@@ -486,13 +705,12 @@ ggplot(data = dat) +
 
 ```
 
-
 ```{r repeat_of_cumulative_distributions, eval=F}
 #TODO this is not used
 #is there a difference between low scoring (p < 0.17 and high scoring p > 0.5) predicted rufs?
 
 
-load("~/bin/Phd/Chapter_4/chapter_4_files/predDat.Rda")
+load("~/bin/manuscript/data/predDat.Rda")
 load("~/bin/Phd/Chapter_4/chapter_4_files/validatation2.Rda")
 ##function written using max_dist as column name so each variable needs to  be renamed to this before using cumulativeDistribution()
 
