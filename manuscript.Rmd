@@ -29,6 +29,7 @@ library(svglite)
 library(ROSE)
 library(ggpubr)
 library(rstatix)
+library(gplots)
 options(dplyr.summarise.inform = FALSE)
 source('~/bin/R/functions.R')
 
@@ -387,8 +388,150 @@ save(max_dists_nc, file = "~/bin/R/r_files/max_dists_nc.Rda")
 
 
 ```
-      
-      
+
+
+Data sets were filtered by distance < 0.15.
+
+-   Threshold was selected based on the distance between genomes within a family
+      -   Filtered at this stage to reduce computational time
+
+```{r, phylogenetic distance, eval=T}
+load("~/bin/manuscript/data/allDists.Rda")
+maxsGenus <- allDists %>% group_by(Genus.x, Genus.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Genus.x == Genus.y, T, F))
+maxsFamily <- allDists %>% group_by(Family.x, Family.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Family.x == Family.y, T, F))
+maxsOrder <- allDists %>% group_by(Order.x, Order.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Order.x == Order.y, T, F))
+maxsClass <- allDists %>% group_by(Class.x, Class.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Class.x == Class.y, T, F))
+maxsPhylum <- allDists %>% group_by(Phylum.x, Phylum.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Phylum.x == Phylum.y, T, F))
+maxsKingdom <- allDists %>% group_by(Kingdom.x, Kingdom.y) %>% 
+  summarise(max_dist = max(distance)) %>% 
+  mutate(same.taxa = ifelse(Kingdom.x == Kingdom.y, T, F))
+genus1 <- maxsGenus %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Genus")
+family1 <- maxsFamily %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Family")
+order1 <- maxsOrder %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Order")
+class1 <- maxsClass %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Class")
+phylum1 <- maxsPhylum %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Phylum")
+kingdom1 <- maxsKingdom %>% ungroup() %>% filter(same.taxa, max_dist > 0) %>% select(max_dist) %>% mutate(group = "Kingdom")
+
+maxs1 <- genus1 %>% bind_rows(family1, order1, class1, phylum1, kingdom1)
+maxs1$group <- factor(maxs1$group, levels = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus"))
+
+p <- ggplot() +
+geom_boxplot(data = maxs1 , aes(x = group, y = max_dist), fill = NA) + coord_flip() +
+  geom_hline(yintercept = 0.15)
+p
+```
+
+
+### Correlation heatmap 
+
+A spearman correlation matrix was produced comparing multiple metrics for each 
+feature. The best performing metrics (measured by comparing correlation with
+known sRNAs were kept).
+
+```{r correlation_heat_map, eval=T}
+load("~/bin/PhD/Chapter_4/chapter_4_files/randomForestDat.Rda")
+
+dat <- dat %>% select(-ID, -power, -motif_count, -read.counts) %>% unique() %>% 
+  mutate(cov.min.eval = -log(cov.min.eval), 
+         z_mean = -z_mean,
+         z_max = -z_max,
+         alifold.score  =-alifold.score,
+         mfe.score = -mfe.score,
+         alifold_cov_score = -alifold_cov_score)
+
+set.seed(101)
+matNames <- c("MFE score", "G+C Percentage", "Evolutionary Distance", 
+              "Read depth (max)", "Read depth (mean)",
+                        "R-scape covariance (mean score)", 
+              "R-scape covariance (max score)", 
+              "R-scape covariance (number of significant pairs)", 
+              "Motif score (mean)", "Motif score (max)", 
+              "Alifold Z score (mean)", "Alifold Z score (max)", 
+              "Alifold covariance score", "Alifold score", 
+              "Number of sequences in alignment", "Sum of motif scores", 
+              "Random", "Known sRNA or RINC")
+
+matrixList <- calculateCorrelationMatrix(dat, matNames)
+rhoMatrix <- matrixList$rhoMatrix
+sigMatrix <- matrixList$sigMatrix
+
+heatmap.2(rhoMatrix, cellnote=round(rhoMatrix, digits = 2),
+          notecex=1.5,notecol="black", col=rev(redblue(40)), 
+          density.info="none", trace="none", dendrogram=c("column"), 
+          symm=F,symkey=T,symbreaks=T, scale="none", key.title = "", 
+          srtRow=45, adjRow=c(0, 1), srtCol=45, adjCol=c(1,1), 
+          breaks=(-20:20)/20, margins = c(8, 8), cexRow=1.5, 
+          cexCol=1.5,font=1)
+
+if(FALSE){
+svglite::svglite(paste0(figure_path, "/heatmap.svg"))
+heatmap.2(rhoMatrix, cellnote=sigMatrix,notecex=1.5,notecol="black",
+          col=rev(redblue(40)), density.info="none", trace="none", 
+          dendrogram=c("column"), symm=F,symkey=T,symbreaks=T, scale="none", 
+          key.title = "", srtRow=45, adjRow=c(0, 1), srtCol=45, adjCol=c(1,1), 
+          breaks=(-20:20)/20, margins = c(8, 8), cexRow=1.5, cexCol=1.5,font=2)
+
+dev.off()
+}
+```
+
+```{r subset_correlation_heat_map, eval=T}
+load("~/bin/PhD/Chapter_4/chapter_4_files/randomForestDat.Rda")
+
+dat <- dat %>% select(group, 
+                      read.max.score, 
+                      distance, 
+                      alifold_cov_score,
+                      cov.min.eval,
+                      motif.sum,
+                      z_max,
+                      mfe.score,
+                      gc.score) %>% 
+  unique() %>% 
+  mutate(cov.min.eval = -log(cov.min.eval), 
+         z_max = -z_max,
+         mfe.score = -mfe.score,
+         alifold_cov_score = -alifold_cov_score)
+
+set.seed(101)
+matNames <- c("Read depth (max)", "Evolutionary distance", 
+              "Alifold covariance score", "R-scape covariance score", 
+              "Sum of motif scores", "Alifold Z score (max)", "MFE score", 
+              "G+C Percentage", "Random", "Known sRNA or RINC")
+
+matrixList <- calculateCorrelationMatrix(dat, matNames)
+rhoMatrix <- matrixList$rhoMatrix
+sigMatrix <- matrixList$sigMatrix
+
+heatmap.2(rhoMatrix, cellnote=round(rhoMatrix, digits = 2),
+          notecex=1.5,notecol="black", col=rev(redblue(40)), 
+          density.info="none", trace="none", dendrogram=c("column"), 
+          symm=F,symkey=T,symbreaks=T, scale="none", key.title = "", 
+          srtRow=45, adjRow=c(0, 1), srtCol=45, adjCol=c(1,1), 
+          breaks=(-20:20)/20, margins = c(8, 8), cexRow=1.5, 
+          cexCol=1.5,font=1)
+
+if(FALSE){
+svglite::svglite(paste0(figure_path, "/svg/heatmap_subset.svg"))
+heatmap.2(rhoMatrix, cellnote=sigMatrix,notecex=1.5,notecol="black",
+          col=rev(redblue(40)), density.info="none", trace="none", 
+          dendrogram=c("column"), symm=F,symkey=T,symbreaks=T, scale="none", 
+          key.title = "", srtRow=45, adjRow=c(0, 1), srtCol=45, adjCol=c(1,1), 
+          breaks=(-20:20)/20, margins = c(8, 8), cexRow=1.5, cexCol=1.5,font=2)
+
+dev.off()
+}
+```
 
 
 ## UpsetR figure
