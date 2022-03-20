@@ -3,9 +3,10 @@ title: 'Comparative RNA-Seq: Signal to Noise Documentation'
 author: "T.J Nicholson & P.P Gardner"
 date: "March 2022"
 output:
-  pdf_document:
+  pdf_document: 
+    highlight: "kate"
     toc: yes
-    toc_depth: '4'
+    toc_depth: 4
   html_notebook:
     toc: yes
     toc_depth: 4
