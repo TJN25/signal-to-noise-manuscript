@@ -1,5 +1,7 @@
 # Comparative RNA-Seq: Signal to noise
 
+TODO: shift large code chunks into separate files.
+
 ## Description 
 
 This repo contains the code, processed data, and IDs used to generate the 
